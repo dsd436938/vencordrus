@@ -16,37 +16,14 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { Settings, useSettings } from "@api/Settings";
-import { classNameFactory } from "@api/Styles";
-import { Flex } from "@components/Flex";
-import { DeleteIcon, FolderIcon, PaintbrushIcon, PencilIcon, PlusIcon, RestartIcon } from "@components/Icons";
+import { useSettings } from "@api/settings";
+import ErrorBoundary from "@components/ErrorBoundary";
 import { Link } from "@components/Link";
-import { openPluginModal } from "@components/PluginSettings/PluginModal";
-import type { UserThemeHeader } from "@main/themes";
-import { openInviteModal } from "@utils/discord";
-import { Margins } from "@utils/margins";
-import { showItemInFolder } from "@utils/native";
-import { useAwaiter } from "@utils/react";
+import { useAwaiter } from "@utils/misc";
 import { findLazy } from "@webpack";
-import { Card, Forms, React, showToast, TabBar, TextArea, useEffect, useRef, useState } from "@webpack/common";
-import type { ComponentType, Ref, SyntheticEvent } from "react";
+import { Card, Forms, Margins, React, TextArea } from "@webpack/common";
 
-import Plugins from "~plugins";
-
-import { AddonCard } from "./AddonCard";
-import { QuickAction, QuickActionCard } from "./quickActions";
-import { SettingsTab, wrapTab } from "./shared";
-
-type FileInput = ComponentType<{
-    ref: Ref<HTMLInputElement>;
-    onChange: (e: SyntheticEvent<HTMLInputElement>) => void;
-    multiple?: boolean;
-    filters?: { name?: string; extensions: string[]; }[];
-}>;
-
-const FileInput: FileInput = findLazy(m => m.prototype?.activateUploadDialogue && m.prototype.setRef);
-
-const cl = classNameFactory("vc-settings-theme-");
+const TextAreaProps = findLazy(m => typeof m.textarea === "string");
 
 function Validator({ link }: { link: string; }) {
     const [res, err, pending] = useAwaiter(() => fetch(link).then(res => {
@@ -74,223 +51,34 @@ function Validators({ themeLinks }: { themeLinks: string[]; }) {
 
     return (
         <>
-            <Forms.FormTitle className={Margins.top20} tag="h5">Validator</Forms.FormTitle>
-            <Forms.FormText>This section will tell you whether your themes can successfully be loaded</Forms.FormText>
+            <Forms.FormTitle className={Margins.marginTop20} tag="h5">Валидатор</Forms.FormTitle>
+            <Forms.FormText>В этом разделе вы узнаете, могут ли ваши темы быть успешно загружены</Forms.FormText>
             <div>
-                {themeLinks.map(rawLink => {
-                    const { label, link } = (() => {
-                        const match = /^@(light|dark) (.*)/.exec(rawLink);
-                        if (!match) return { label: rawLink, link: rawLink };
-
-                        const [, mode, link] = match;
-                        return { label: `[${mode} mode only] ${link}`, link };
-                    })();
-
-                    return <Card style={{
+                {themeLinks.map(link => (
+                    <Card style={{
                         padding: ".5em",
-                        marginBottom: ".5em",
-                        marginTop: ".5em"
+                        marginBottom: ".5em"
                     }} key={link}>
                         <Forms.FormTitle tag="h5" style={{
                             overflowWrap: "break-word"
                         }}>
-                            {label}
+                            {link}
                         </Forms.FormTitle>
                         <Validator link={link} />
-                    </Card>;
-                })}
+                    </Card>
+                ))}
             </div>
         </>
     );
 }
 
-interface ThemeCardProps {
-    theme: UserThemeHeader;
-    enabled: boolean;
-    onChange: (enabled: boolean) => void;
-    onDelete: () => void;
-}
+export default ErrorBoundary.wrap(function () {
+    const settings = useSettings();
+    const ref = React.useRef<HTMLTextAreaElement>();
 
-function ThemeCard({ theme, enabled, onChange, onDelete }: ThemeCardProps) {
-    return (
-        <AddonCard
-            name={theme.name}
-            description={theme.description}
-            author={theme.author}
-            enabled={enabled}
-            setEnabled={onChange}
-            infoButton={
-                IS_WEB && (
-                    <div style={{ cursor: "pointer", color: "var(--status-danger" }} onClick={onDelete}>
-                        <DeleteIcon />
-                    </div>
-                )
-            }
-            footer={
-                <Flex flexDirection="row" style={{ gap: "0.2em" }}>
-                    {!!theme.website && <Link href={theme.website}>Website</Link>}
-                    {!!(theme.website && theme.invite) && " • "}
-                    {!!theme.invite && (
-                        <Link
-                            href={`https://discord.gg/${theme.invite}`}
-                            onClick={async e => {
-                                e.preventDefault();
-                                theme.invite != null && openInviteModal(theme.invite).catch(() => showToast("Invalid or expired invite"));
-                            }}
-                        >
-                            Discord Server
-                        </Link>
-                    )}
-                </Flex>
-            }
-        />
-    );
-}
-
-enum ThemeTab {
-    LOCAL,
-    ONLINE
-}
-
-function ThemesTab() {
-    const settings = useSettings(["themeLinks", "enabledThemes"]);
-
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const [currentTab, setCurrentTab] = useState(ThemeTab.LOCAL);
-    const [themeText, setThemeText] = useState(settings.themeLinks.join("\n"));
-    const [userThemes, setUserThemes] = useState<UserThemeHeader[] | null>(null);
-    const [themeDir, , themeDirPending] = useAwaiter(VencordNative.themes.getThemesDir);
-
-    useEffect(() => {
-        refreshLocalThemes();
-    }, []);
-
-    async function refreshLocalThemes() {
-        const themes = await VencordNative.themes.getThemesList();
-        setUserThemes(themes);
-    }
-
-    // When a local theme is enabled/disabled, update the settings
-    function onLocalThemeChange(fileName: string, value: boolean) {
-        if (value) {
-            if (settings.enabledThemes.includes(fileName)) return;
-            settings.enabledThemes = [...settings.enabledThemes, fileName];
-        } else {
-            settings.enabledThemes = settings.enabledThemes.filter(f => f !== fileName);
-        }
-    }
-
-    async function onFileUpload(e: SyntheticEvent<HTMLInputElement>) {
-        e.stopPropagation();
-        e.preventDefault();
-        if (!e.currentTarget?.files?.length) return;
-        const { files } = e.currentTarget;
-
-        const uploads = Array.from(files, file => {
-            const { name } = file;
-            if (!name.endsWith(".css")) return;
-
-            return new Promise<void>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                    VencordNative.themes.uploadTheme(name, reader.result as string)
-                        .then(resolve)
-                        .catch(reject);
-                };
-                reader.readAsText(file);
-            });
-        });
-
-        await Promise.all(uploads);
-        refreshLocalThemes();
-    }
-
-    function renderLocalThemes() {
-        return (
-            <>
-                <Card className="vc-settings-card">
-                    <Forms.FormTitle tag="h5">Find Themes:</Forms.FormTitle>
-                    <div style={{ marginBottom: ".5em", display: "flex", flexDirection: "column" }}>
-                        <Link style={{ marginRight: ".5em" }} href="https://betterdiscord.app/themes">
-                            BetterDiscord Themes
-                        </Link>
-                        <Link href="https://github.com/search?q=discord+theme">GitHub</Link>
-                    </div>
-                    <Forms.FormText>If using the BD site, click on "Download" and place the downloaded .theme.css file into your themes folder.</Forms.FormText>
-                </Card>
-
-                <Forms.FormSection title="Local Themes">
-                    <QuickActionCard>
-                        <>
-                            {IS_WEB ?
-                                (
-                                    <QuickAction
-                                        text={
-                                            <span style={{ position: "relative" }}>
-                                                Upload Theme
-                                                <FileInput
-                                                    ref={fileInputRef}
-                                                    onChange={onFileUpload}
-                                                    multiple={true}
-                                                    filters={[{ extensions: ["css"] }]}
-                                                />
-                                            </span>
-                                        }
-                                        Icon={PlusIcon}
-                                    />
-                                ) : (
-                                    <QuickAction
-                                        text="Open Themes Folder"
-                                        action={() => showItemInFolder(themeDir!)}
-                                        disabled={themeDirPending}
-                                        Icon={FolderIcon}
-                                    />
-                                )}
-                            <QuickAction
-                                text="Load missing Themes"
-                                action={refreshLocalThemes}
-                                Icon={RestartIcon}
-                            />
-                            <QuickAction
-                                text="Edit QuickCSS"
-                                action={() => VencordNative.quickCss.openEditor()}
-                                Icon={PaintbrushIcon}
-                            />
-
-                            {Settings.plugins.ClientTheme.enabled && (
-                                <QuickAction
-                                    text="Edit ClientTheme"
-                                    action={() => openPluginModal(Plugins.ClientTheme)}
-                                    Icon={PencilIcon}
-                                />
-                            )}
-                        </>
-                    </QuickActionCard>
-
-                    <div className={cl("grid")}>
-                        {userThemes?.map(theme => (
-                            <ThemeCard
-                                key={theme.fileName}
-                                enabled={settings.enabledThemes.includes(theme.fileName)}
-                                onChange={enabled => onLocalThemeChange(theme.fileName, enabled)}
-                                onDelete={async () => {
-                                    onLocalThemeChange(theme.fileName, false);
-                                    await VencordNative.themes.deleteTheme(theme.fileName);
-                                    refreshLocalThemes();
-                                }}
-                                theme={theme}
-                            />
-                        ))}
-                    </div>
-                </Forms.FormSection>
-            </>
-        );
-    }
-
-    // When the user leaves the online theme textbox, update the settings
     function onBlur() {
         settings.themeLinks = [...new Set(
-            themeText
+            ref.current!.value
                 .trim()
                 .split(/\n+/)
                 .map(s => s.trim())
@@ -298,59 +86,50 @@ function ThemesTab() {
         )];
     }
 
-    function renderOnlineThemes() {
-        return (
-            <>
-                <Card className="vc-settings-card vc-text-selectable">
-                    <Forms.FormTitle tag="h5">Paste links to css files here</Forms.FormTitle>
-                    <Forms.FormText>One link per line</Forms.FormText>
-                    <Forms.FormText>You can prefix lines with @light or @dark to toggle them based on your Discord theme</Forms.FormText>
-                    <Forms.FormText>Make sure to use direct links to files (raw or github.io)!</Forms.FormText>
-                </Card>
-
-                <Forms.FormSection title="Online Themes" tag="h5">
-                    <TextArea
-                        value={themeText}
-                        onChange={setThemeText}
-                        className={"vc-settings-theme-links"}
-                        placeholder="Theme Links"
-                        spellCheck={false}
-                        onBlur={onBlur}
-                        rows={10}
-                    />
-                    <Validators themeLinks={settings.themeLinks} />
-                </Forms.FormSection>
-            </>
-        );
-    }
-
     return (
-        <SettingsTab title="Themes">
-            <TabBar
-                type="top"
-                look="brand"
-                className="vc-settings-tab-bar"
-                selectedItem={currentTab}
-                onItemSelect={setCurrentTab}
-            >
-                <TabBar.Item
-                    className="vc-settings-tab-bar-item"
-                    id={ThemeTab.LOCAL}
-                >
-                    Local Themes
-                </TabBar.Item>
-                <TabBar.Item
-                    className="vc-settings-tab-bar-item"
-                    id={ThemeTab.ONLINE}
-                >
-                    Online Themes
-                </TabBar.Item>
-            </TabBar>
-
-            {currentTab === ThemeTab.LOCAL && renderLocalThemes()}
-            {currentTab === ThemeTab.ONLINE && renderOnlineThemes()}
-        </SettingsTab>
+        <>
+            <Card style={{
+                padding: "1em",
+                marginBottom: "1em",
+                marginTop: "1em"
+            }}>
+                <Forms.FormTitle tag="h5">Вставьте сюда ссылку на .css / .theme.css файлы</Forms.FormTitle>
+                <Forms.FormText>Одна ссылка на одну строку</Forms.FormText>
+                <Forms.FormText>Будьте осторожны при использовании прямых ссылок или ссылок на github.io!</Forms.FormText>
+                <Forms.FormDivider />
+                <Forms.FormTitle tag="h5">Найти темы:</Forms.FormTitle>
+                <div>
+                    <Link style={{ marginRight: ".5em" }} href="https://betterdiscord.app/themes">
+                        BetterDiscord темы
+                    </Link>
+                    <Link href="https://github.com/search?q=discord+theme">Github</Link>
+                </div>
+                <Forms.FormText>Если вы используете сайт BetterDiscord, нажмите на "Source"</Forms.FormText>
+                <Forms.FormText>В репозитории вашей темы на GitHub найдите X.theme.css / X.css, щелкните по нему, затем нажмите кнопку "Raw"</Forms.FormText>
+                <Forms.FormText>
+                    Если тема содержит конфиг, который надо отредактировать:
+                    <ul>
+                        <li>• Создайте аккаунт Github</li>
+                        <li>• Нажмите на кнопку "Fork" (справа вверху)</li>
+                        <li>• Измените файл конфига</li>
+                        <li>• Используйте ссылку СВОЕГО репозитория</li>
+                    </ul>
+                </Forms.FormText>
+            </Card>
+            <Forms.FormTitle tag="h5">Темы</Forms.FormTitle>
+            <TextArea
+                style={{
+                    padding: ".5em",
+                    border: "1px solid var(--background-modifier-accent)"
+                }}
+                ref={ref}
+                defaultValue={settings.themeLinks.join("\n")}
+                className={TextAreaProps.textarea}
+                placeholder="Theme Links"
+                spellCheck={false}
+                onBlur={onBlur}
+            />
+            <Validators themeLinks={settings.themeLinks} />
+        </>
     );
-}
-
-export default wrapTab(ThemesTab, "Themes");
+});
